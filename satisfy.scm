@@ -142,9 +142,10 @@
      tasks))
   (worker-loop id mbox))
 
-(define n-workers 16)
+(define idle-workers)
+(define workers)
 
-(define (start-workers)
+(define (start-workers n-workers)
   (let ((l '()))
     ;; Start workers:
     (do ((i 0 (1+ i)))
@@ -154,9 +155,8 @@
          (worker-loop i mbox))
         (set! l (cons mbox l))))
     ;; Return an array:
-    (list->array 1 l)))
-
-(define workers (start-workers))
+    (set! workers (list->array 1 l))
+    (set! idle-workers (make-array #f n-workers))))
 
 (define (dispatch-to-worker! id task)
   (dbg "Dispatch ~a to ~a\n" task id)
@@ -165,10 +165,10 @@
 ;;;;;;; Main process
 
 ;;;;; Pool of idle workers:
-(define idle-workers (make-array #f n-workers))
 
 (define (find-idle-worker)
-  (let ((i 0))
+  (let ((i 0)
+        (n-workers (array-length workers)))
     (while (and (< i n-workers)
                 (not (array-ref idle-workers i)))
       (set! i (1+ i)))
@@ -253,7 +253,9 @@
   (when (or (> n-deps 0) (planned-tasks?))
     (main-loop)))
 
-(define (satisfy-run seed)
+(define (satisfy-run n-workers seed)
+  ;; Initialize
+  (start-workers n-workers)
   ;; Enqueue the seed task:
   (require! seed)
   (main-loop))
@@ -289,6 +291,7 @@
       '()))
 
 (defc msg_printed (m)
+  (sleep 1)
   (msg "  !!!!! ~a\n" m)
   #t
   )
@@ -307,4 +310,4 @@
   (msg "!! another statement from main..\n")
   )
 
-(satisfy-run (main))
+(satisfy-run 16 (main))
