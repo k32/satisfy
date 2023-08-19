@@ -1,12 +1,12 @@
-(define-module (satisfy core)
-  #:export (defc sat satisfy-run))
+(define-module (core)
+  #:export (defc sat satisfy-run msg debug))
 
-(use-modules (ice-9 threads)
+(use-modules (srfi srfi-9) ; records
+             (ice-9 threads)
              (ice-9 control)
              (ice-9 q)
              (ice-9 match)
-             (ice-9 format)
-             (srfi srfi-9))
+             (ice-9 format))
 
 (define plock (make-mutex))
 
@@ -246,16 +246,20 @@
   ;; Dispatch tasks to workers:
   (dispatch-tasks))
 
-
 (define (main-loop)
   (for-each handle-event
             (mailbox-receive runq))
   (when (or (> n-deps 0) (planned-tasks?))
     (main-loop)))
 
-(define (satisfy-run n-workers seed)
+(define* (satisfy-run seed #:key
+                      (jobs #f)
+                      (debug #f))
+  (dbg "Running ~a -j ~a" seed jobs)
   ;; Initialize
-  (start-workers n-workers)
+  (set! satisfy--debug debug)
+  (start-workers (or jobs
+                     (current-processor-count)))
   ;; Enqueue the seed task:
   (require! seed)
   (main-loop))
@@ -282,32 +286,3 @@
   (for-each sat1 reqs)
   ;; Return key(s):
   (map ckey reqs))
-
-;;;; Test
-
-(define (mklist n fun)
-  (if (> n 0)
-      (cons (fun n) (mklist (1- n) fun))
-      '()))
-
-(defc msg_printed (m)
-  (sleep 1)
-  (msg "  !!!!! ~a\n" m)
-  #t
-  )
-
-(defc something (m)
-  (sat (msg_printed m))
-  (msg "  !!!!! something ~a\n" m)
-  )
-
-(define huge-list
-  (mklist 100 (lambda (i) (something i))))
-
-(defc main ()
-  (msg "!! This is me, main!\n")
-  (apply sat huge-list)
-  (msg "!! another statement from main..\n")
-  )
-
-(satisfy-run 16 (main))

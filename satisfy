@@ -1,0 +1,69 @@
+#!/usr/bin/env -S guile -e main -L .
+;; -*- mode: scheme -*-
+!#
+(use-modules (core)
+             (lib)
+             (ice-9 getopt-long)
+             (ice-9 i18n)
+             (system base compile))
+
+;; (define (check-jobs str)
+;;   (positive? (locale-string->integer str)))
+
+(define option-spec
+  '((version    (single-char #\v) (value #f))
+    (debug      (value #f))
+    (help       (single-char #\h) (value #f))
+    (file       (single-char #\f) (value #t))
+    (directory  (single-char #\d) (value #t))
+    (jobs       (single-char #\j) (value #t))))
+
+(defc __main (satisfile targets)
+  (let ((bytecode (compiled-file-name satisfile)))
+    ;; Compile Satisfile:
+    (unless (newer bytecode satisfile)
+      (compile-file satisfile))
+    (load-compiled bytecode)
+    ;; Execute targets
+    (sat (default))))
+
+(define (process-targets l)
+  (if l
+      l
+      '((default))))
+
+(define (load-satisfile options)
+  (let* ((file-opt (option-ref options 'file #f))
+         (dir      (option-ref options 'directory #f))
+         (file     (if file-opt file-opt "Satisfile"))
+         (debug    (option-ref options 'debug #f))
+         (jobs     (locale-string->integer (option-ref options 'jobs #f)))
+         (targets  (process-targets (option-ref options '() #f)))
+         (seed     (__main file targets)))
+    (when dir
+      (chdir dir))
+    (satisfy-run seed
+                 #:debug debug
+                 #:jobs jobs)))
+
+(define (main args)
+  (let* ((options (getopt-long args option-spec))
+         (help-wanted (option-ref options 'help #f))
+         (version-wanted (option-ref options 'version #f)))
+    (begin
+      (if version-wanted
+          (display "satisfy version 0.0.1\n"))
+      (if help-wanted
+          (display "\
+Usage: satisfy [OPTION]... [TARGET]...
+Satisfy conditions described in a file (Satisfile by default).
+
+  -C DIR, --directory=DIR    Change to DIR before running
+  -f FILE, --file=FILE       Use FILE as Satisfile
+  -j [N], --jobs[=N]         Maximum number of jobs running in parallel
+                             equal to the number of CPU cores by default
+  -v, --version              Display version
+  -h, --help                 Display this help
+")))
+    (begin
+      (load-satisfile options))))

@@ -1,0 +1,29 @@
+;; -*- mode:scheme -*-
+(use-modules (core) (lib))
+
+;;;; Test
+
+(define (mklist n fun)
+  (if (> n 0)
+      (cons (fun n) (mklist (1- n) fun))
+      '()))
+
+(defc msg_printed (m)
+  (sleep 1)
+  (msg "  !!!!! ~a\n" m)
+  #t
+  )
+
+(defc something (m)
+  (sat (msg_printed m))
+  (msg "  !!!!! something ~a\n" m)
+  )
+
+(define huge-list
+  (mklist 100 (lambda (i) (something i))))
+
+(defc default ()
+  (msg "!! This is me, main!\n")
+  (apply sat huge-list)
+  (msg "!! another statement from main..\n")
+  )
