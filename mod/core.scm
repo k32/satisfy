@@ -255,7 +255,7 @@
     ;; A task has failed:
     (`(failed ,key ,exn . ,args)
      (with-mutex plock
-       (format (current-error-port) "Task ~a failed: ~s (~a)" key exn (list args)))
+       (format (current-error-port) "Task ~a failed: ~s (~a)\n" key exn (list args)))
      (set! failed? #t)
      (pop-dep! key))
 
