@@ -1,7 +1,20 @@
+;; This program is free software: you can redistribute it and/or
+;; modify it under the terms of the GNU General Public License as
+;; published by the Free Software Foundation version 3 of the License.
+;;
+;; This program is distributed in the hope that it will be useful, but
+;; WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+;; General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program. If not, see
+;; <https://www.gnu.org/licenses/>.
 (define-module (core)
   #:export (defc sat satisfy-run msg debug))
 
 (use-modules (srfi srfi-9) ; records
+             (srfi srfi-1) ; every; fold
              (rnrs exceptions)
              (ice-9 threads)
              (ice-9 control)
@@ -30,7 +43,7 @@
     (apply msg (cons fmt args))))
 
 ;;;;;;;;; Loop wrapper
-(define (loop-wrapper name thunk)
+(define (loop--wrapper name thunk)
   (catch #t
     thunk
     (lambda args (exit 1))
@@ -38,6 +51,11 @@
       (with-mutex plock
         (format (current-error-port) "Internal error in ~a ~a" name args)
         (backtrace)))))
+
+(define-syntax loop-wrapper
+  (syntax-rules ()
+    ((_ name body ...)
+     (loop--wrapper name (lambda () body ...)))))
 
 (setvbuf (current-output-port) 'line)
 
@@ -166,8 +184,9 @@
   (worker-loop id mbox))
 
 (define (worker-entrypoint id mbox)
-  (loop-wrapper (list 'worker id)
-   (lambda () (worker-loop id mbox))))
+  (loop-wrapper
+   (list 'worker id)
+   (worker-loop id mbox)))
 
 (define-record-type worker
   (make--worker thread mailbox idle)
@@ -182,8 +201,17 @@
     (make--worker thread mailbox #f)))
 
 (define (start-workers arg)
-  (list->array 1
-               (map make-worker (iota arg))))
+  (let ((n (or arg (total-processor-count))))
+    (list->array 1
+                 (map make-worker (iota n)))))
+
+(define (stop-workers workers)
+  (array-for-each (lambda (w)
+                    (cancel-thread (w:thread w)))
+                  workers)
+  (array-for-each (lambda (w)
+                    (join-thread (w:thread w)))
+                  workers))
 
 (define (dispatch-to-worker! workers id task)
   (dbg "Dispatch ~a to ~a\n" task id)
@@ -256,64 +284,64 @@
 
 ;;;;; Main process:
 
-(define failed? #f)
+(define success #t)
 
-(define (handle-event workers event)
-  (dbg "           ~a   ~a" event n-deps)
-  ;; Process event:
-  (match event
-    ;; A task has been resolved:
-    (`(resolved . ,key)
-     (apply add-tasks! (pop-dep! key))
-     (set-resolved! key))
+(define (handle-event workers)
+  (lambda (event)
+    (dbg "           ~a   ~a" event n-deps)
+    ;; Process event:
+    (match event
+      ;; A task has been resolved:
+      (`(resolved . ,key)
+       (apply add-tasks! (pop-dep! key))
+       (set-resolved! key))
 
-    ;; A task has failed:
-    (`(failed ,key ,exn . ,args)
-     (with-mutex plock
-       (format (current-error-port) "Task ~a failed: ~s (~a)\n" key exn (list args)))
-     (set! failed? #t)
-     (pop-dep! key))
+      ;; A task has failed:
+      (`(failed ,key ,exn . ,args)
+       (with-mutex plock
+         (format (current-error-port) "Task ~a failed: ~s (~a)\n" key exn (list args)))
+       (set! success #f)
+       (pop-dep! key))
 
-    ;; Add a dependency:
-    (`(newdep ,requirement . ,conts)
-     (match (task-outcome requirement)
-       ;; Already solved, dispatch immediately:
-       (#t      (apply add-tasks! conts))
+      ;; Add a dependency:
+      (`(newdep ,requirement . ,conts)
+       (match (task-outcome requirement)
+         ;; Already solved, dispatch immediately:
+         (#t      (apply add-tasks! conts))
 
-       ;; Add to the dependency list:
-       (#f      (when (add-dep! requirement conts)
-                  ;; This is a new task, schedule it for execution:
-                  (add-tasks! (condition-shim requirement))))
-       ;; Requirement has failed, so we ignore the new tasks:
-       ('failed #t)))
+         ;; Add to the dependency list:
+         (#f      (when (add-dep! requirement conts)
+                    ;; This is a new task, schedule it for execution:
+                    (add-tasks! (condition-shim requirement))))
+         ;; Requirement has failed, so we ignore the new tasks:
+         ('failed  #t)))
 
-    ;; Worker is ready:
-    (`(worker-ready . ,worker-id)
-     (push-worker! workers worker-id)))
-  ;; Dispatch tasks to workers:
-  (dispatch-tasks workers))
+      ;; Worker is ready:
+      (`(worker-ready . ,worker-id)
+       (push-worker! workers worker-id)))
+    ;; Dispatch tasks to workers:
+    (dispatch-tasks workers)))
 
 (define (main-loop workers)
-  (for-each (lambda (evt) (handle-event workers evt))
+  (for-each (handle-event workers)
             (mailbox-receive runq))
   (if (or (> n-deps 0) (planned-tasks?))
-      ;; Then
+      ;; Continue
       (main-loop workers)
       ;; Else:
-      (not failed?)))
+      success))
 
 (define* (satisfy-run seed #:key
                       (jobs #f)
                       (debug #f))
   (dbg "Running ~a -j ~a" seed jobs)
-  (loop-wrapper 'main
-   (lambda ()
-     ;; Initialize
-     (set! satisfy--debug debug)
-     (let ((workers (start-workers jobs)))
-       ;; Enqueue the seed task:
-       (require! seed)
-       (main-loop workers)))))
+  (loop-wrapper
+   'main
+   (let ((workers (start-workers jobs)))
+     (require! seed)
+     (main-loop workers)
+     (stop-workers workers)
+     success)))
 
 ;;;;;;;;;;;;; Client side
 
