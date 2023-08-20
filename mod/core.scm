@@ -29,6 +29,16 @@
   (when satisfy--debug
     (apply msg (cons fmt args))))
 
+;;;;;;;;; Loop wrapper
+(define (loop-wrapper name thunk)
+  (catch #t
+    thunk
+    (lambda args (exit 1))
+    (lambda args
+      (with-mutex plock
+        (format (current-error-port) "Internal error in ~a ~a" name args)
+        (backtrace)))))
+
 (setvbuf (current-output-port) 'line)
 
 ;;;;;;;;; Mailbox
@@ -93,6 +103,7 @@
 
 ;;;; Deps tab
 (define deps--tab (make-hash-table))
+
 (define n-deps 0)
 
 (define (pop-dep! key)
@@ -154,50 +165,53 @@
     (for-each exec-task tasks))
   (worker-loop id mbox))
 
-(define idle-workers)
-(define workers)
+(define (worker-entrypoint id mbox)
+  (loop-wrapper (list 'worker id)
+   (lambda () (worker-loop id mbox))))
 
-(define (start-workers n-workers)
-  (let ((l '()))
-    ;; Start workers:
-    (do ((i 0 (1+ i)))
-        ((>= i n-workers))
-      (let ((mbox (make-mailbox i)))
-        (begin-thread
-         (worker-loop i mbox))
-        (set! l (cons mbox l))))
-    ;; Return an array:
-    (set! workers (list->array 1 l))
-    (set! idle-workers (make-array #f n-workers))))
+(define-record-type worker
+  (make--worker thread mailbox idle)
+  worker?
+  (thread w:thread)
+  (mailbox w:mailbox)
+  (idle idle? set-idle!))
 
-(define (dispatch-to-worker! id task)
+(define (make-worker id)
+  (let* ((mailbox (make-mailbox id))
+         (thread  (begin-thread (worker-entrypoint id mailbox))))
+    (make--worker thread mailbox #f)))
+
+(define (start-workers arg)
+  (list->array 1
+               (map make-worker (iota arg))))
+
+(define (dispatch-to-worker! workers id task)
   (dbg "Dispatch ~a to ~a\n" task id)
-  (mailbox! (array-ref workers id) task))
+  (mailbox! (w:mailbox (array-ref workers id))
+            task))
+
+(define (find-idle-worker workers)
+  (let ((i 0)
+        (n-workers (array-length workers)))
+    ;; Loop over workers until we find an idle one:
+    (while (and (< i n-workers)
+                (not (idle? (array-ref workers i))))
+      (++ i))
+    ;; Found?
+    (if (< i n-workers) i #f)))
+
+(define (push-worker! workers id)
+  (set-idle! (array-ref workers id) #t))
+
+(define (pop-worker! workers)
+  (let ((id (find-idle-worker workers)))
+    (set-idle! (array-ref workers id) #f)
+    id))
 
 ;;;;;;; Main process
 
-;;;;; Pool of idle workers:
-
-(define (find-idle-worker)
-  (let ((i 0)
-        (n-workers (array-length workers)))
-    (while (and (< i n-workers)
-                (not (array-ref idle-workers i)))
-      (set! i (1+ i)))
-    (if (< i n-workers)
-        i
-        #f)))
-
-(define (push-worker! id)
-  (array-set! idle-workers #t id))
-
-(define (pop-worker!)
-  (let ((id (find-idle-worker)))
-    (array-set! idle-workers #f id)
-    id))
-
-(define (idle-workers?)
-  (and (find-idle-worker) #t))
+(define (idle-workers? workers)
+  (and (find-idle-worker workers) #t))
 
 ;;;;; Task queue:
 (define task-queue (make-q))
@@ -214,9 +228,10 @@
 (define (pop-task!)
   (q-pop! task-queue))
 
-(define (dispatch-tasks)
-  (while (and (planned-tasks?) (idle-workers?))
-    (dispatch-to-worker! (pop-worker!)
+(define (dispatch-tasks workers)
+  (while (and (planned-tasks?) (idle-workers? workers))
+    (dispatch-to-worker! workers
+                         (pop-worker! workers)
                          (pop-task!))))
 
 ;;;;; Wrapper for a condition:
@@ -243,7 +258,7 @@
 
 (define failed? #f)
 
-(define (handle-event event)
+(define (handle-event workers event)
   (dbg "           ~a   ~a" event n-deps)
   ;; Process event:
   (match event
@@ -274,16 +289,16 @@
 
     ;; Worker is ready:
     (`(worker-ready . ,worker-id)
-     (push-worker! worker-id)))
+     (push-worker! workers worker-id)))
   ;; Dispatch tasks to workers:
-  (dispatch-tasks))
+  (dispatch-tasks workers))
 
-(define (main-loop)
-  (for-each handle-event
+(define (main-loop workers)
+  (for-each (lambda (evt) (handle-event workers evt))
             (mailbox-receive runq))
   (if (or (> n-deps 0) (planned-tasks?))
       ;; Then
-      (main-loop)
+      (main-loop workers)
       ;; Else:
       (not failed?)))
 
@@ -291,19 +306,20 @@
                       (jobs #f)
                       (debug #f))
   (dbg "Running ~a -j ~a" seed jobs)
-  ;; Initialize
-  (set! satisfy--debug debug)
-  (start-workers (or jobs
-                     (current-processor-count)))
-  ;; Enqueue the seed task:
-  (require! seed)
-  (main-loop))
+  (loop-wrapper 'main
+   (lambda ()
+     ;; Initialize
+     (set! satisfy--debug debug)
+     (let ((workers (start-workers jobs)))
+       ;; Enqueue the seed task:
+       (require! seed)
+       (main-loop workers)))))
 
 ;;;;;;;;;;;;; Client side
 
 (define-syntax defc
   (syntax-rules ()
-    ((_ name (args ...) body ...)
+    ((_ (name args ...) body ...)
      (define (name args ...)
        (make-condition
         (list 'name args ...)

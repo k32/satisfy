@@ -22,7 +22,7 @@
     (directory  (single-char #\d) (value #t))
     (jobs       (single-char #\j) (value #t))))
 
-(defc __main (satisfile targets)
+(defc (__main satisfile targets)
   (let ((bytecode (compiled-file-name satisfile)))
     ;; Compile Satisfile:
     (unless (newer bytecode satisfile)
