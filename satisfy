@@ -32,7 +32,7 @@
       l
       '((default))))
 
-(define (load-satisfile options)
+(define (runit options)
   (let* ((file-opt (option-ref options 'file #f))
          (dir      (option-ref options 'directory #f))
          (file     (if file-opt file-opt "Satisfile"))
@@ -50,11 +50,11 @@
   (let* ((options (getopt-long args option-spec))
          (help-wanted (option-ref options 'help #f))
          (version-wanted (option-ref options 'version #f)))
-    (begin
-      (if version-wanted
-          (display "satisfy version 0.0.1\n"))
-      (if help-wanted
-          (display "\
+    (cond
+     (version-wanted
+      (display "satisfy version 0.0.1\n"))
+     (help-wanted
+      (display "\
 Usage: satisfy [OPTION]... [TARGET]...
 Satisfy conditions described in a file (Satisfile by default).
 
@@ -64,6 +64,7 @@ Satisfy conditions described in a file (Satisfile by default).
                              equal to the number of CPU cores by default
   -v, --version              Display version
   -h, --help                 Display this help
-")))
-    (begin
-      (load-satisfile options))))
+"))
+     (#t
+      (unless (runit options)
+        (primitive-exit 1))))))

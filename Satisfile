@@ -9,18 +9,19 @@
       '()))
 
 (defc msg_printed (m)
-  (sleep 1)
-  (msg "  !!!!! ~a\n" m)
+  ;(sleep 1)
+                                        ;(msg "  !!!!! ~a\n" m)
+  (1)
   #t
   )
 
 (defc something (m)
   (sat (msg_printed m))
-  (msg "  !!!!! something ~a\n" m)
+  ;(msg "  !!!!! something ~a\n" m)
   )
 
 (define huge-list
-  (mklist 100 (lambda (i) (something i))))
+  (mklist 10000 (lambda (i) (something i))))
 
 (defc default ()
   (msg "!! This is me, main!\n")

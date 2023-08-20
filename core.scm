@@ -2,6 +2,7 @@
   #:export (defc sat satisfy-run msg debug))
 
 (use-modules (srfi srfi-9) ; records
+             (rnrs exceptions)
              (ice-9 threads)
              (ice-9 control)
              (ice-9 q)
@@ -78,11 +79,17 @@
 ;;;;;;;;;;; Resolved memo tab
 (define resolved--tab (make-hash-table))
 
-(define (resolved? con)
+;; #t -> resolved
+;; #f -> unknown
+;; 'failed
+(define (task-outcome con)
   (hash-ref resolved--tab (ckey con)))
 
 (define (set-resolved! key)
   (hash-set! resolved--tab key #t))
+
+(define (set-failed! key)
+  (hash-set! resolved--tab key 'failed))
 
 ;;;; Deps tab
 (define deps--tab (make-hash-table))
@@ -116,10 +123,10 @@
 
 ;;;; Send messages:
 (define (depend! requirement conts)
-  (mailbox! runq `(depend ,requirement . ,conts)))
+  (mailbox! runq `(newdep ,requirement . ,conts)))
 
 (define (require! requirement)
-  (unless (resolved? requirement)
+  (unless (task-outcome requirement)
     (depend! requirement '())))
 
 (define (worker-ready! worker-id)
@@ -128,18 +135,23 @@
 (define (resolved! key)
   (mailbox! runq `(resolved . ,key)))
 
+(define (failed! key exn args)
+  (mailbox! runq `(failed ,key ,exn . ,args)))
+
 ;;;;;;;; Worker
+
+(define (task-exn-handler exn . args)
+  (format (current-error-port)
+          "Task failed: ~s ~a\n" exn (list args)))
+
+(define (exec-task task)
+  (task))
 
 (define (worker-loop id mbox)
   (dbg "Worker loop ~a\n" id)
   (worker-ready! id)
   (let ((tasks (mailbox-receive mbox)))
-    (for-each
-     (lambda (task)
-       (dbg "      ~a: executes ~a\n" id task)
-       (task)
-       (dbg "      ~a: is ready\n" id))
-     tasks))
+    (for-each exec-task tasks))
   (worker-loop id mbox))
 
 (define idle-workers)
@@ -210,16 +222,26 @@
 ;;;;; Wrapper for a condition:
 
 (define (condition-shim con)
-  (let ((key (ckey con))
-        (fun (cfun con)))
+  (let* ((key (ckey con))
+         (fun (cfun con))
+         (handler (lambda (exn . args)
+                    (failed! key exn args)))
+         (pre-unwind (lambda (exn . args)
+                       (with-mutex plock (backtrace)))))
     (lambda ()
-      (reset
-       (dbg "~a is scheduled\n" key)
-       (fun)
-       (dbg "~a is satisfied\n" key)
-       (resolved! key)))))
+      (catch #t
+        (lambda ()
+          (reset
+           (dbg "~a is scheduled\n" key)
+           (fun)
+           (dbg "~a is satisfied\n" key)
+           (resolved! key)))
+        handler))))
+        ;pre-unwind))))
 
 ;;;;; Main process:
+
+(define failed? #f)
 
 (define (handle-event event)
   (dbg "           ~a   ~a" event n-deps)
@@ -229,17 +251,27 @@
     (`(resolved . ,key)
      (apply add-tasks! (pop-dep! key))
      (set-resolved! key))
+
+    ;; A task has failed:
+    (`(failed ,key ,exn . ,args)
+     (with-mutex plock
+       (format (current-error-port) "Task ~a failed: ~s (~a)" key exn (list args)))
+     (set! failed? #t)
+     (pop-dep! key))
+
     ;; Add a dependency:
-    (`(depend ,requirement . ,conts)
-     (if (resolved? requirement)
-         ;; Already solved, dispatch immediately:
-         (begin
-           (apply add-tasks! conts))
-         ;; Add to the dependency list:
-         (begin
-           (when (add-dep! requirement conts)
-             ;; This is a new task, schedule it for execution
-             (add-tasks! (condition-shim requirement))))))
+    (`(newdep ,requirement . ,conts)
+     (match (task-outcome requirement)
+       ;; Already solved, dispatch immediately:
+       (#t      (apply add-tasks! conts))
+
+       ;; Add to the dependency list:
+       (#f      (when (add-dep! requirement conts)
+                  ;; This is a new task, schedule it for execution:
+                  (add-tasks! (condition-shim requirement))))
+       ;; Requirement has failed, so we ignore the new tasks:
+       ('failed #t)))
+
     ;; Worker is ready:
     (`(worker-ready . ,worker-id)
      (push-worker! worker-id)))
@@ -249,8 +281,11 @@
 (define (main-loop)
   (for-each handle-event
             (mailbox-receive runq))
-  (when (or (> n-deps 0) (planned-tasks?))
-    (main-loop)))
+  (if (or (> n-deps 0) (planned-tasks?))
+      ;; Then
+      (main-loop)
+      ;; Else:
+      (not failed?)))
 
 (define* (satisfy-run seed #:key
                       (jobs #f)
@@ -275,7 +310,7 @@
         (lambda () body ...))))))
 
 (define (sat1 requirement)
-  (unless (resolved? requirement)
+  (unless (task-outcome requirement)
     (shift cont
            (depend! requirement (list cont)))))
 
