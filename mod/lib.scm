@@ -12,7 +12,9 @@
 ;; <https://www.gnu.org/licenses/>.
 
 (define-module (lib)
-  #:export (newer))
+  #:export (newer? default-shell shell! always-make))
+
+(define always-make #f)
 
 (define (get-mtime-ns file)
   (and (file-exists? file)
@@ -21,10 +23,34 @@
             (stat:mtimensec s)))))
 
 (define (get-sources-mtime-ns l)
-  (let ((t (get-mtime-ns (car l))))
-    (cond ((null? (cdr l))     t)
-          (t                   (max t (get-sources-mtime-ns (cdr l))))
-          (#t                  #f))))
+  (let* ((hd   (car l))
+         (tl   (cdr l))
+         (t    (get-mtime-ns hd)))
+    (cond ((not t)            (throw 'missing-source-file hd))
+          ((null? tl)         t)
+          (#t                 (max t (get-sources-mtime-ns tl))))))
 
-(define (newer a b)
-  #f)
+(define (get-targets-mtime-ns l)
+  (let* ((hd   (car l))
+         (tl   (cdr l))
+         (t    (get-mtime-ns hd)))
+    (cond ((not t)            #f)
+          ((null? tl)         t)
+          (#t                 (min t (get-targets-mtime-ns tl))))))
+
+(define (newer? target . sources)
+  (let* ((targets (if (string? target)
+                      (list target)
+                      target))
+         (tmt (get-targets-mtime-ns targets)))
+    (and tmt
+         (> tmt (get-sources-mtime-ns sources))
+         (not always-make))))
+
+(define (shell! . chunks)
+  "Execute a shell command and throw an exception if the return code is
+not 0"
+  (let* ((cmd         (apply string-append chunks))
+         (exit-code   (system cmd)))
+    (unless (= 0 exit-code)
+      (throw 'recipe-failed cmd exit-code))))

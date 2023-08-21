@@ -201,7 +201,8 @@
     (make--worker thread mailbox #f)))
 
 (define (start-workers arg)
-  (let ((n (or arg (total-processor-count))))
+  (let ((n (or (and (integer? arg) (positive? arg))
+               (total-processor-count))))
     (list->array 1
                  (map make-worker (iota n)))))
 
@@ -270,7 +271,9 @@
          (handler (lambda (exn . args)
                     (failed! key exn args)))
          (pre-unwind (lambda (exn . args)
-                       (with-mutex plock (backtrace)))))
+                       (with-mutex plock
+                         (format (current-error-port) "Task ~a failed: ~s (~a)\n" key exn (list args))
+                         (backtrace)))))
     (lambda ()
       (catch #t
         (lambda ()
@@ -279,8 +282,8 @@
            (fun)
            (dbg "~a is satisfied\n" key)
            (resolved! key)))
-        handler))))
-        ;pre-unwind))))
+        handler
+        pre-unwind))))
 
 ;;;;; Main process:
 
@@ -298,8 +301,6 @@
 
       ;; A task has failed:
       (`(failed ,key ,exn . ,args)
-       (with-mutex plock
-         (format (current-error-port) "Task ~a failed: ~s (~a)\n" key exn (list args)))
        (set! success #f)
        (pop-dep! key))
 

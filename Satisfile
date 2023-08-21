@@ -1,29 +1,26 @@
 ;; -*- mode:scheme -*-
-(use-modules (core) (lib))
+(use-modules (core)
+             (lib)
+             (system base compile))
 
-;;;; Test
+(define outdir "_build")
 
-(define (mklist n fun)
-  (if (> n 0)
-      (cons (fun n) (mklist (1- n) fun))
-      '()))
+(defc (gc inf)
+  (let ((outf (compiled-file-name inf)))
+    (unless (newer? outf inf)
+      (compile-file inf))))
 
-(defc (msg_printed m)
-  ;(sleep 1)
-                                        ;(msg "  !!!!! ~a\n" m)
-  #t
-  )
+(defc (passed suite)
+  (shell! "guile -L mod " suite ".scm"))
 
-(defc (something m)
-  (sat (msg_printed m))
-  ;(msg "  !!!!! something ~a\n" m)
-  )
+(defc (compiled)
+  (sat (gc "mod/core.scm")
+       (gc "mod/lib.scm")
+       (gc "satisfy")))
 
-(define huge-list
-  (mklist 10000 (lambda (i) (something i))))
+(defc (tested)
+  (sat (compiled))
+  (passed "test"))
 
 (defc (default)
-  (msg "!! This is me, main!\n")
-  (apply sat huge-list)
-  (msg "!! another statement from main..\n")
-  )
+  (sat (compiled) (tested)))

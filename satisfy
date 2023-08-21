@@ -19,34 +19,32 @@
              (ice-9 i18n)
              (system base compile))
 
-;; (define (check-jobs str)
-;;   (positive? (locale-string->integer str)))
-
 (define (parse-jobs input)
   (when input
     (locale-string->integer input)))
 
 (define option-spec
-  '((version    (single-char #\v) (value #f))
-    (debug      (value #f))
-    (help       (single-char #\h) (value #f))
-    (file       (single-char #\f) (value #t))
-    (directory  (single-char #\d) (value #t))
-    (jobs       (single-char #\j) (value #t))))
+  '((version     (single-char #\v) (value #f))
+    (debug       (value #f))
+    (help        (single-char #\h) (value #f))
+    (file        (single-char #\f) (value #t))
+    (directory   (single-char #\d) (value #t))
+    (jobs        (single-char #\j) (value #t))
+    (always-make (single-char #\B) (value #f))))
+
+(define (process-targets l)
+  (list (default)))
+  ;; (cond ((string? l) l)
+  ;;       ((not l)     (list (default)))))
 
 (defc (__main satisfile targets)
   (let ((bytecode (compiled-file-name satisfile)))
     ;; Compile Satisfile:
-    (unless (newer bytecode satisfile)
+    (unless (newer? bytecode satisfile)
       (compile-file satisfile))
     (load-compiled bytecode)
     ;; Execute targets
-    (sat (default))))
-
-(define (process-targets l)
-  (if l
-      l
-      '((default))))
+    (apply sat (process-targets targets))))
 
 (define (runit options)
   (let* ((file-opt (option-ref options 'file #f))
@@ -54,10 +52,11 @@
          (file     (if file-opt file-opt "Satisfile"))
          (debug    (option-ref options 'debug #f))
          (jobs     (parse-jobs (option-ref options 'jobs #f)))
-         (targets  (process-targets (option-ref options '() #f)))
+         (targets  (option-ref options '() #f))
          (seed     (__main file targets)))
     (when dir
       (chdir dir))
+    (set! always-make (option-ref options 'always-make #f))
     (satisfy-run seed
                  #:debug debug
                  #:jobs jobs)))
